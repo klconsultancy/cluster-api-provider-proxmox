@@ -143,7 +143,7 @@ func newCloneStartedScope(t *testing.T, stored ...client.Object) *MachineScope {
 		Client:         kubeClient,
 		Cluster:        &clusterv1.Cluster{},
 		Machine:        &clusterv1.Machine{},
-		InfraCluster:   &ClusterScope{},
+		InfraCluster:   &ClusterScope{ProxmoxCluster: &infrav1.ProxmoxCluster{}},
 		ProxmoxMachine: &infrav1.ProxmoxMachine{ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: metav1.NamespaceDefault}},
 		IPAMHelper:     &ipam.Helper{},
 	})
