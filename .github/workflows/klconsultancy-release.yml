@@ -1,0 +1,90 @@
+name: klconsultancy release
+
+# The klconsultancy fork's releases: an upstream release tag plus a few commits, each
+# with an upstream pull request, tagged vX.Y.Z-kl.N. A tag builds a multi-arch image
+# (upstream's container-image workflow builds amd64 only) and a GitHub release with
+# infrastructure-components.yaml pointing at that image by digest, for clusterctl.
+# Not meant for upstream; this file is the only one of its kind in the fork.
+on:
+  push:
+    tags:
+      - 'v*-kl.*'
+
+permissions: {}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # the image on GHCR
+      id-token: write # signing the attestation
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The Dockerfile's builder stage runs per platform, so arm64 builds under QEMU.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.ref_name }}
+          provenance: mode=max
+          sbom: true
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+  release:
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the GitHub release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # As upstream's release-manifests target, with the image by digest instead of tag.
+      - name: Build the release manifests
+        env:
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          mkdir -p out
+          cp metadata.yaml out/metadata.yaml
+          (cd config/default && go tool kustomize edit set image "ghcr.io/ionos-cloud/cluster-api-provider-proxmox=$IMAGE@$DIGEST")
+          go tool kustomize build config/default > out/infrastructure-components.yaml
+          grep -q "$IMAGE@$DIGEST" out/infrastructure-components.yaml
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          gh release create "$TAG" out/* --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
+            --title "$TAG" \
+            --notes "Image: \`$IMAGE@$DIGEST\`
+
+          Verify it with \`gh attestation verify oci://$IMAGE@$DIGEST --repo $GITHUB_REPOSITORY\`.
+
+          The commits on top of the upstream release are listed with \`git log\` from the upstream tag; each has an upstream pull request."
